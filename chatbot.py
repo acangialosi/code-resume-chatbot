@@ -140,7 +140,7 @@ def create_chatbot():
     # Create the chain
     question_answer_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(
-        vectorstore.as_retriever(search_kwargs={"k": 8}),
+        vectorstore.as_retriever(search_kwargs={"k": 25}),
         question_answer_chain
     )
     

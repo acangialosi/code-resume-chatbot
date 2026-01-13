@@ -9,8 +9,10 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import ConversationalRetrievalChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 
 load_dotenv()
@@ -19,23 +21,18 @@ DATA_DIR = Path(__file__).parent / "data"
 VECTORSTORE_DIR = Path(__file__).parent / "vectorstore"
 
 # System prompt for the chatbot
-SYSTEM_TEMPLATE = """You are a helpful assistant that answers questions about a person's professional experience based on their performance reviews and career documents.
+SYSTEM_PROMPT = """You are a helpful assistant that answers questions about a person's professional experience based on their performance reviews and career documents.
 
-Use the following context to answer the question. The context includes performance reviews (called "Connects") from different fiscal years and halves (e.g., FY25H1 = Fiscal Year 2025, first half).
+The context below includes performance reviews (called "Connects") from different fiscal years and halves (e.g., FY25H1 = Fiscal Year 2025, first half).
 
 When answering:
 - Be specific and cite time periods when relevant (e.g., "In FY25H1...")
-- If asked about accomplishments, projects, or impact, draw from the "Summarize your impact" and "Core priorities" sections
-- If asked about skills or growth areas, look at "Opportunities for growth" and manager feedback
+- Draw from the context provided below
 - If the information isn't in the context, say so rather than making things up
 - Synthesize information across multiple time periods when relevant
 
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
+Context from documents:
+{context}"""
 
 
 def parse_fiscal_period(filename: str) -> str:
@@ -123,20 +120,21 @@ def create_chatbot():
     
     llm = ChatOpenAI(
         model="gpt-4o-mini",
-        temperature=0.3,  # Lower temperature for more factual answers
+        temperature=0.3,
     )
     
-    # Custom prompt with system instructions
-    prompt = PromptTemplate(
-        template=SYSTEM_TEMPLATE,
-        input_variables=["context", "question"]
-    )
+    # Create prompt with chat history support
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+    ])
     
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 6}),  # Retrieve more chunks
-        return_source_documents=True,
-        combine_docs_chain_kwargs={"prompt": prompt},
+    # Create the chain
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    chain = create_retrieval_chain(
+        vectorstore.as_retriever(search_kwargs={"k": 8}),
+        question_answer_chain
     )
     
     return chain
@@ -144,9 +142,15 @@ def create_chatbot():
 
 def chat(chain, question: str, chat_history: list) -> str:
     """Send a question to the chatbot and get a response."""
+    # Convert chat history to LangChain message format
+    messages = []
+    for human, ai in chat_history:
+        messages.append(HumanMessage(content=human))
+        messages.append(AIMessage(content=ai))
+    
     result = chain.invoke({
-        "question": question,
-        "chat_history": chat_history,
+        "input": question,
+        "chat_history": messages,
     })
     return result["answer"]
 
